@@ -41,11 +41,9 @@ jobs:
         id: lightweight
         uses: ./
         with:
-          source-path: .
-          checkout-path: .
-          source-tag: v0.0.0-lightweight
-          source-sha: ${{ github.sha }}
-          source-base-ref: HEAD
+          tag: v0.0.0-lightweight
+          sha: ${{ github.sha }}
+          base-ref: HEAD
           fetch: "false"
           tag-pattern: "v*"
 
@@ -53,32 +51,25 @@ jobs:
         id: annotated
         uses: ./
         with:
-          source-path: .
-          checkout-path: .
-          source-tag: v0.0.0-annotated
-          source-base-ref: HEAD
+          tag: v0.0.0-annotated
+          base-ref: HEAD
           fetch: "false"
           tag-pattern: "v*"
 
       - name: Verify outputs
         env:
-          LIGHTWEIGHT_SOURCE_REPOSITORY: ${{ steps.lightweight.outputs.source-repository }}
-          LIGHTWEIGHT_SOURCE_TAG: ${{ steps.lightweight.outputs.source-tag }}
           LIGHTWEIGHT_SHA: ${{ steps.lightweight.outputs.sha }}
           LIGHTWEIGHT_TAG_SHA: ${{ steps.lightweight.outputs.tag-sha }}
-          LIGHTWEIGHT_CHECKOUT_SHA: ${{ steps.lightweight.outputs.checkout-sha }}
+          LIGHTWEIGHT_HEAD_SHA: ${{ steps.lightweight.outputs.head-sha }}
           LIGHTWEIGHT_BASE_REF: ${{ steps.lightweight.outputs.base-ref }}
           ANNOTATED_SHA: ${{ steps.annotated.outputs.sha }}
           ANNOTATED_TAG_SHA: ${{ steps.annotated.outputs.tag-sha }}
           EXPECTED_SHA: ${{ github.sha }}
-          EXPECTED_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          test "${LIGHTWEIGHT_SOURCE_REPOSITORY}" = "${EXPECTED_REPOSITORY}"
-          test "${LIGHTWEIGHT_SOURCE_TAG}" = "v0.0.0-lightweight"
           test "${LIGHTWEIGHT_SHA}" = "${EXPECTED_SHA}"
           test "${LIGHTWEIGHT_TAG_SHA}" = "${EXPECTED_SHA}"
-          test "${LIGHTWEIGHT_CHECKOUT_SHA}" = "${EXPECTED_SHA}"
+          test "${LIGHTWEIGHT_HEAD_SHA}" = "${EXPECTED_SHA}"
           test "${LIGHTWEIGHT_BASE_REF}" = "HEAD"
           test "${ANNOTATED_SHA}" = "${EXPECTED_SHA}"
           test "${ANNOTATED_TAG_SHA}" = "${EXPECTED_SHA}"

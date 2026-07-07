@@ -1,67 +1,59 @@
 name: "Verify Tag Ref"
-description: "Verify a source repository tag, optional SHA, base reachability, and optional checkout HEAD"
+description: "Verify a checked-out release tag, optional SHA, checkout HEAD, and base reachability"
 author: "lwmacct"
 inputs:
-  source-repository:
-    description: "Repository that owns the source tag, in owner/repo format. Defaults to the current repository."
+  tag:
+    description: "Release tag to validate."
+    required: true
+  sha:
+    description: "Optional expected commit SHA. When empty, the tag target commit is used."
     required: false
-  source-tag:
-    description: "Source release tag. Defaults to the current tag ref when running from a tag push."
+  base-ref:
+    description: "Branch or ref that the release commit must be reachable from."
+    default: "main"
     required: false
-  source-sha:
-    description: "Optional expected source commit SHA. When empty, the tag target commit is used."
+  repository-path:
+    description: "Path to the checked-out git repository."
+    default: "."
     required: false
-  source-base-ref:
-    description: "Branch or ref that the source commit must be reachable from. Defaults to the source repository default branch."
-    required: false
-  source-path:
-    description: "Optional local git repository path. When empty, the action verifies by fetching source-repository into a temporary directory."
-    required: false
-  checkout-path:
-    description: "Optional local checkout path whose HEAD must equal the verified source SHA."
-    required: false
-  token:
-    description: "GitHub token used to read source repository metadata and fetch private repositories."
-    default: ${{ github.token }}
+  remote:
+    description: "Git remote used when fetching tag and base-ref."
+    default: "origin"
     required: false
   fetch:
-    description: "Set to true to fetch tag and base ref when source-path is provided. Remote mode always fetches."
+    description: "Set to true to fetch tag and base-ref before validation."
+    default: "true"
+    required: false
+  validate-checkout:
+    description: "Set to true to require repository HEAD to equal the release commit."
     default: "true"
     required: false
   validate-reachable:
-    description: "Set to true to require the source commit to be reachable from source-base-ref."
-    default: "true"
-    required: false
-  require-tag:
-    description: "Set to true to fail when no source tag can be resolved."
+    description: "Set to true to require the release commit to be reachable from base-ref."
     default: "true"
     required: false
   tag-pattern:
-    description: "Optional glob pattern that source-tag must match, for example v*."
+    description: "Optional glob pattern that tag must match, for example v*."
     required: false
   summary:
     description: "Set to true to write a GitHub step summary."
     default: "true"
     required: false
 outputs:
-  source-repository:
-    description: "Resolved source repository."
-  source-tag:
-    description: "Validated source tag."
-  source-sha:
-    description: "Resolved trusted source commit SHA."
+  tag:
+    description: "Validated tag."
   sha:
-    description: "Alias of source-sha."
+    description: "Resolved trusted release commit SHA."
   tag-sha:
     description: "Commit SHA resolved from the tag."
+  head-sha:
+    description: "Checked-out HEAD SHA."
   base-ref:
     description: "Local base ref used for reachability validation."
   base-sha:
     description: "Commit SHA resolved from base-ref."
-  checkout-sha:
-    description: "Checkout HEAD SHA when checkout-path is provided."
-  source-path:
-    description: "Local path used for source git verification."
+  repository-path:
+    description: "Checked repository path."
 branding:
   icon: "check-circle"
   color: "green"
