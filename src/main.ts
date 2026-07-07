@@ -1,35 +1,36 @@
 import * as core from "@actions/core";
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
 interface Inputs {
-  tag: string;
-  sha: string;
-  baseRef: string;
-  remote: string;
+  sourceRepository: string;
+  sourceTag: string;
+  sourceSha: string;
+  sourceBaseRef: string;
+  sourcePath: string;
+  checkoutPath: string;
+  token: string;
   fetch: boolean;
-  validateCheckout: boolean;
   validateReachable: boolean;
+  requireTag: boolean;
   tagPattern: string;
   summary: boolean;
 }
 
-interface BaseRef {
-  input: string;
-  localRef: string;
-  fetchRefspec: string;
-}
-
 interface VerificationResult {
-  tag: string;
-  sha: string;
+  sourceRepository: string;
+  sourceTag: string;
+  sourceSha: string;
   tagSha: string;
-  headSha: string;
   baseRef: string;
   baseSha: string;
+  checkoutSha: string;
+  sourcePath: string;
 }
 
 interface GitHubEventPayload {
@@ -38,9 +39,19 @@ interface GitHubEventPayload {
   };
 }
 
+interface RepositoryResponse {
+  default_branch?: string;
+}
+
+interface BaseRef {
+  input: string;
+  localRef: string;
+  fetchRefspec: string;
+}
+
 async function run(): Promise<void> {
   try {
-    const inputs = getInputs();
+    const inputs = await getInputs();
     const result = await verifyTagRef(inputs);
     setOutputs(result);
     if (inputs.summary) {
@@ -51,171 +62,221 @@ async function run(): Promise<void> {
   }
 }
 
-function getInputs(): Inputs {
-  const tag = core.getInput("tag", { required: true });
-  const baseRef = core.getInput("base-ref") || defaultBranchFromEvent() || "main";
-  const remote = core.getInput("remote") || "origin";
+async function getInputs(): Promise<Inputs> {
+  const sourceRepository = core.getInput("source-repository") || getRequiredEnv("GITHUB_REPOSITORY");
+  assertRepository(sourceRepository, "source-repository");
 
-  if (!tag.trim()) {
-    throw new Error("tag is required");
+  const contextTag = tagFromGithubContext();
+  const explicitSourceTag = core.getInput("source-tag");
+  const sourceTag = explicitSourceTag || contextTag;
+  const sourceSha = core.getInput("source-sha").trim() || (explicitSourceTag ? "" : shaFromGithubContext(contextTag));
+
+  if (!sourceTag && getBooleanInput("require-tag")) {
+    throw new Error("source-tag is required. Provide source-tag or run from a tag push event.");
   }
-  if (!baseRef.trim()) {
-    throw new Error("base-ref is required");
+  if (sourceSha) {
+    assertSha(sourceSha, "source-sha");
   }
-  if (!remote.trim()) {
-    throw new Error("remote is required");
-  }
+
+  const sourceBaseRef = core.getInput("source-base-ref") || (await defaultSourceBaseRef(sourceRepository, core.getInput("token")));
 
   return {
-    tag,
-    sha: core.getInput("sha").trim(),
-    baseRef,
-    remote,
+    sourceRepository,
+    sourceTag,
+    sourceSha,
+    sourceBaseRef,
+    sourcePath: core.getInput("source-path"),
+    checkoutPath: core.getInput("checkout-path"),
+    token: core.getInput("token"),
     fetch: getBooleanInput("fetch"),
-    validateCheckout: getBooleanInput("validate-checkout"),
     validateReachable: getBooleanInput("validate-reachable"),
+    requireTag: getBooleanInput("require-tag"),
     tagPattern: core.getInput("tag-pattern"),
     summary: getBooleanInput("summary"),
   };
 }
 
 async function verifyTagRef(inputs: Inputs): Promise<VerificationResult> {
-  if (inputs.tagPattern && !matchesGlob(inputs.tag, inputs.tagPattern)) {
-    throw new Error(`tag ${inputs.tag} does not match pattern ${inputs.tagPattern}`);
+  if (!inputs.sourceTag) {
+    throw new Error("source-tag is required");
+  }
+  if (inputs.tagPattern && !matchesGlob(inputs.sourceTag, inputs.tagPattern)) {
+    throw new Error(`source-tag ${inputs.sourceTag} does not match pattern ${inputs.tagPattern}`);
   }
 
-  await assertGitRef(`refs/tags/${inputs.tag}`, "tag");
-  assertShaInput(inputs.sha);
+  await assertGitRef(`refs/tags/${inputs.sourceTag}`, "source-tag");
+  const sourcePath = inputs.sourcePath ? path.resolve(inputs.sourcePath) : await prepareRemoteSource(inputs);
+  const baseRef = resolveBaseRef(inputs.sourceBaseRef);
 
-  const baseRef = resolveBaseRef(inputs.baseRef, inputs.remote);
-  if (!isSha(baseRef.localRef) && baseRef.localRef !== "HEAD") {
-    await assertGitRef(baseRef.localRef, "base-ref");
+  if (inputs.sourcePath && inputs.fetch) {
+    await fetchLocalSource(sourcePath, inputs, baseRef);
   }
 
-  if (inputs.fetch) {
-    await fetchTag(inputs.remote, inputs.tag);
-    if (inputs.validateReachable && baseRef.fetchRefspec) {
-      await fetchBaseRef(inputs.remote, baseRef);
-    }
-  }
-
-  const tagSha = await gitStdout(["rev-parse", `refs/tags/${inputs.tag}^{commit}`]);
-  const releaseSha = inputs.sha || tagSha;
-  if (tagSha !== releaseSha) {
-    throw new Error(`${inputs.tag} points to ${tagSha}, not ${releaseSha}`);
-  }
-
-  const headSha = await gitStdout(["rev-parse", "HEAD"]);
-  if (inputs.validateCheckout && headSha !== releaseSha) {
-    throw new Error(`Checked out ${headSha}, not ${releaseSha}`);
+  const tagSha = await gitStdout(sourcePath, ["rev-parse", `refs/tags/${inputs.sourceTag}^{commit}`]);
+  const sourceSha = inputs.sourceSha || tagSha;
+  if (tagSha !== sourceSha) {
+    throw new Error(`${inputs.sourceTag} points to ${tagSha}, not ${sourceSha}`);
   }
 
   let baseSha = "";
   if (inputs.validateReachable) {
-    baseSha = await gitStdout(["rev-parse", `${baseRef.localRef}^{commit}`]);
-    await assertAncestor(releaseSha, baseRef.localRef, inputs.tag);
+    baseSha = await gitStdout(sourcePath, ["rev-parse", `${baseRef.localRef}^{commit}`]);
+    await assertAncestor(sourcePath, sourceSha, baseRef.localRef, inputs.sourceTag);
   }
 
-  core.info(`Verified ${inputs.tag} at ${releaseSha}`);
+  const checkoutSha = inputs.checkoutPath ? await verifyCheckout(inputs.checkoutPath, sourceSha) : "";
+
+  core.info(`Verified ${inputs.sourceRepository} ${inputs.sourceTag} at ${sourceSha}`);
   return {
-    tag: inputs.tag,
-    sha: releaseSha,
+    sourceRepository: inputs.sourceRepository,
+    sourceTag: inputs.sourceTag,
+    sourceSha,
     tagSha,
-    headSha,
     baseRef: baseRef.localRef,
     baseSha,
+    checkoutSha,
+    sourcePath,
   };
 }
 
-async function fetchTag(remote: string, tag: string): Promise<void> {
-  core.info(`Fetching tag ${tag} from ${remote}`);
-  await git(["fetch", "--force", remote, `refs/tags/${tag}:refs/tags/${tag}`]);
+async function prepareRemoteSource(inputs: Inputs): Promise<string> {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "verified-tag-ref-"));
+  await git(directory, ["init", "--quiet"]);
+  await fetchRemoteSource(directory, inputs, resolveBaseRef(inputs.sourceBaseRef));
+  return directory;
 }
 
-async function fetchBaseRef(remote: string, baseRef: BaseRef): Promise<void> {
-  core.info(`Fetching base ref ${baseRef.input} from ${remote}`);
-  await git(["fetch", "--force", remote, baseRef.fetchRefspec]);
+async function fetchRemoteSource(directory: string, inputs: Inputs, baseRef: BaseRef): Promise<void> {
+  const remoteUrl = repositoryGitUrl(inputs.sourceRepository);
+  const fetchArgs = ["fetch", "--force", "--no-tags", remoteUrl, `refs/tags/${inputs.sourceTag}:refs/tags/${inputs.sourceTag}`];
+  if (inputs.validateReachable && baseRef.fetchRefspec) {
+    fetchArgs.push(baseRef.fetchRefspec);
+  }
+  core.info(`Fetching ${inputs.sourceRepository} tag ${inputs.sourceTag}`);
+  await git(directory, fetchArgs, inputs.token);
 }
 
-async function assertAncestor(releaseSha: string, baseRef: string, tag: string): Promise<void> {
+async function fetchLocalSource(directory: string, inputs: Inputs, baseRef: BaseRef): Promise<void> {
+  const remoteUrl = repositoryGitUrl(inputs.sourceRepository);
+  const fetchArgs = ["fetch", "--force", "--no-tags", remoteUrl, `refs/tags/${inputs.sourceTag}:refs/tags/${inputs.sourceTag}`];
+  if (inputs.validateReachable && baseRef.fetchRefspec) {
+    fetchArgs.push(baseRef.fetchRefspec);
+  }
+  await git(directory, fetchArgs, inputs.token);
+}
+
+async function verifyCheckout(checkoutPath: string, sourceSha: string): Promise<string> {
+  const checkoutSha = await gitStdout(path.resolve(checkoutPath), ["rev-parse", "HEAD"]);
+  if (checkoutSha !== sourceSha) {
+    throw new Error(`Checked out ${checkoutSha}, not ${sourceSha}`);
+  }
+  return checkoutSha;
+}
+
+async function assertAncestor(directory: string, sourceSha: string, baseRef: string, sourceTag: string): Promise<void> {
   try {
-    await git(["merge-base", "--is-ancestor", releaseSha, baseRef]);
+    await git(directory, ["merge-base", "--is-ancestor", sourceSha, baseRef]);
   } catch {
-    throw new Error(`${tag} commit ${releaseSha} is not reachable from ${baseRef}`);
+    throw new Error(`${sourceTag} commit ${sourceSha} is not reachable from ${baseRef}`);
   }
 }
 
-function resolveBaseRef(value: string, remote: string): BaseRef {
-  if (value === "HEAD" || isSha(value)) {
-    return { input: value, localRef: value, fetchRefspec: "" };
+function resolveBaseRef(value: string): BaseRef {
+  const baseRef = value || "main";
+  if (baseRef === "HEAD" || isSha(baseRef)) {
+    return { input: baseRef, localRef: baseRef, fetchRefspec: "" };
   }
 
-  if (value.startsWith(`refs/remotes/${remote}/`)) {
-    const branch = value.slice(`refs/remotes/${remote}/`.length);
+  if (baseRef.startsWith("refs/heads/")) {
+    const branch = baseRef.slice("refs/heads/".length);
     return {
-      input: value,
-      localRef: value,
-      fetchRefspec: `refs/heads/${branch}:${value}`,
+      input: baseRef,
+      localRef: `refs/remotes/source/${branch}`,
+      fetchRefspec: `${baseRef}:refs/remotes/source/${branch}`,
     };
   }
 
-  if (value.startsWith("refs/remotes/")) {
-    return { input: value, localRef: value, fetchRefspec: "" };
+  if (baseRef.startsWith("refs/remotes/")) {
+    return { input: baseRef, localRef: baseRef, fetchRefspec: "" };
   }
 
-  if (value.startsWith("refs/heads/")) {
-    const branch = value.slice("refs/heads/".length);
-    const localRef = `refs/remotes/${remote}/${branch}`;
+  if (baseRef.startsWith("source/")) {
+    const branch = baseRef.slice("source/".length);
     return {
-      input: value,
-      localRef,
-      fetchRefspec: `${value}:${localRef}`,
+      input: baseRef,
+      localRef: `refs/remotes/source/${branch}`,
+      fetchRefspec: `refs/heads/${branch}:refs/remotes/source/${branch}`,
     };
   }
 
-  if (value.startsWith(`${remote}/`)) {
-    const branch = value.slice(remote.length + 1);
-    const localRef = `refs/remotes/${remote}/${branch}`;
+  if (baseRef.startsWith("refs/")) {
     return {
-      input: value,
-      localRef,
-      fetchRefspec: `refs/heads/${branch}:${localRef}`,
+      input: baseRef,
+      localRef: "refs/action/source-base",
+      fetchRefspec: `${baseRef}:refs/action/source-base`,
     };
   }
 
-  if (value.startsWith("refs/")) {
-    return {
-      input: value,
-      localRef: value,
-      fetchRefspec: `${value}:${value}`,
-    };
-  }
-
-  const localRef = `refs/remotes/${remote}/${value}`;
   return {
-    input: value,
-    localRef,
-    fetchRefspec: `refs/heads/${value}:${localRef}`,
+    input: baseRef,
+    localRef: `refs/remotes/source/${baseRef}`,
+    fetchRefspec: `refs/heads/${baseRef}:refs/remotes/source/${baseRef}`,
   };
+}
+
+async function defaultSourceBaseRef(sourceRepository: string, token: string): Promise<string> {
+  const eventDefaultBranch = defaultBranchFromEvent();
+  if (sourceRepository === process.env.GITHUB_REPOSITORY && eventDefaultBranch) {
+    return eventDefaultBranch;
+  }
+
+  try {
+    const repository = await githubJson<RepositoryResponse>(token, `/repos/${sourceRepository}`);
+    if (repository.default_branch) {
+      return repository.default_branch;
+    }
+  } catch (error) {
+    core.debug(`Failed to resolve default branch from GitHub API: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return eventDefaultBranch || "main";
+}
+
+async function githubJson<T>(token: string, pathname: string): Promise<T> {
+  if (!token) {
+    throw new Error("token is required to resolve source repository metadata");
+  }
+
+  const response = await fetch(`${githubApiBaseUrl()}${pathname}`, {
+    method: "GET",
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${token}`,
+      "x-github-api-version": "2022-11-28",
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`GitHub API request failed: ${response.status} ${response.statusText}${body ? `\n${body}` : ""}`);
+  }
+
+  return (await response.json()) as T;
 }
 
 async function assertGitRef(ref: string, label: string): Promise<void> {
   try {
-    await git(["check-ref-format", ref]);
+    await execFileAsync("git", ["check-ref-format", ref], { maxBuffer: 1024 * 1024 });
   } catch {
     throw new Error(`${label} is not a valid git ref: ${ref}`);
   }
 }
 
-function assertShaInput(value: string): void {
-  if (value && !isSha(value)) {
-    throw new Error("sha must be a full 40-character hex commit SHA");
-  }
-}
-
-async function git(args: string[]): Promise<void> {
+async function git(directory: string, args: string[], token = ""): Promise<void> {
   try {
-    const { stdout, stderr } = await execFileAsync("git", args, {
+    const finalArgs = token ? ["-c", `http.${githubServerUrl()}/.extraheader=AUTHORIZATION: bearer ${token}`, ...args] : args;
+    const { stdout, stderr } = await execFileAsync("git", finalArgs, {
+      cwd: directory,
       maxBuffer: 1024 * 1024,
     });
     if (stdout.trim()) {
@@ -233,9 +294,10 @@ async function git(args: string[]): Promise<void> {
   }
 }
 
-async function gitStdout(args: string[]): Promise<string> {
+async function gitStdout(directory: string, args: string[]): Promise<string> {
   try {
     const { stdout } = await execFileAsync("git", args, {
+      cwd: directory,
       maxBuffer: 1024 * 1024,
     });
     return stdout.trim();
@@ -249,12 +311,15 @@ async function gitStdout(args: string[]): Promise<string> {
 }
 
 function setOutputs(result: VerificationResult): void {
-  core.setOutput("tag", result.tag);
-  core.setOutput("sha", result.sha);
+  core.setOutput("source-repository", result.sourceRepository);
+  core.setOutput("source-tag", result.sourceTag);
+  core.setOutput("source-sha", result.sourceSha);
+  core.setOutput("sha", result.sourceSha);
   core.setOutput("tag-sha", result.tagSha);
-  core.setOutput("head-sha", result.headSha);
   core.setOutput("base-ref", result.baseRef);
   core.setOutput("base-sha", result.baseSha);
+  core.setOutput("checkout-sha", result.checkoutSha);
+  core.setOutput("source-path", result.sourcePath);
 }
 
 async function writeSummary(result: VerificationResult): Promise<void> {
@@ -263,14 +328,44 @@ async function writeSummary(result: VerificationResult): Promise<void> {
       { data: "Item", header: true },
       { data: "Value", header: true },
     ],
-    ["Tag", code(result.tag)],
-    ["Release SHA", code(result.sha)],
+    ["Source repository", code(result.sourceRepository)],
+    ["Source tag", code(result.sourceTag)],
+    ["Source SHA", code(result.sourceSha)],
     ["Tag SHA", code(result.tagSha)],
-    ["HEAD SHA", code(result.headSha)],
     ["Base ref", code(result.baseRef)],
     ["Base SHA", code(result.baseSha || "(not checked)")],
+    ["Checkout SHA", code(result.checkoutSha || "(not checked)")],
   ]);
   await core.summary.write();
+}
+
+function tagFromGithubContext(): string {
+  if (process.env.GITHUB_REF_TYPE === "tag") {
+    return process.env.GITHUB_REF_NAME ?? "";
+  }
+
+  const ref = process.env.GITHUB_REF ?? "";
+  return ref.startsWith("refs/tags/") ? ref.slice("refs/tags/".length) : "";
+}
+
+function shaFromGithubContext(tag: string): string {
+  return tag ? (process.env.GITHUB_SHA ?? "") : "";
+}
+
+function defaultBranchFromEvent(): string {
+  const eventPath = process.env.GITHUB_EVENT_PATH;
+  if (!eventPath) {
+    return "";
+  }
+
+  try {
+    const payload = JSON.parse(fs.readFileSync(eventPath, "utf8")) as GitHubEventPayload;
+    const defaultBranch = payload.repository?.default_branch;
+    return typeof defaultBranch === "string" ? defaultBranch : "";
+  } catch (error) {
+    core.debug(`Failed to read default branch from event payload: ${error instanceof Error ? error.message : String(error)}`);
+    return "";
+  }
 }
 
 function getBooleanInput(name: string): boolean {
@@ -287,19 +382,16 @@ function getBooleanInput(name: string): boolean {
   throw new Error(`${name} must be true or false`);
 }
 
-function defaultBranchFromEvent(): string {
-  const eventPath = process.env.GITHUB_EVENT_PATH;
-  if (!eventPath) {
-    return "";
+function assertRepository(repository: string, name: string): void {
+  const [owner, repo, extra] = repository.split("/");
+  if (!owner || !repo || extra) {
+    throw new Error(`${name} must use owner/repo format`);
   }
+}
 
-  try {
-    const payload = JSON.parse(fs.readFileSync(eventPath, "utf8")) as GitHubEventPayload;
-    const defaultBranch = payload.repository?.default_branch;
-    return typeof defaultBranch === "string" ? defaultBranch : "";
-  } catch (error) {
-    core.debug(`Failed to read default branch from event payload: ${error instanceof Error ? error.message : String(error)}`);
-    return "";
+function assertSha(value: string, name: string): void {
+  if (!isSha(value)) {
+    throw new Error(`${name} must be a full 40-character hex commit SHA`);
   }
 }
 
@@ -328,6 +420,26 @@ function escapeRegExp(value: string): string {
 
 function isSha(value: string): boolean {
   return /^[a-fA-F0-9]{40}$/.test(value);
+}
+
+function repositoryGitUrl(repository: string): string {
+  return `${githubServerUrl()}/${repository}.git`;
+}
+
+function githubServerUrl(): string {
+  return process.env.GITHUB_SERVER_URL || "https://github.com";
+}
+
+function githubApiBaseUrl(): string {
+  return process.env.GITHUB_API_URL || "https://api.github.com";
+}
+
+function getRequiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
 }
 
 function code(value: string): string {

@@ -1,106 +1,121 @@
 # Verify Tag Ref
 
-验证一个发布 tag 是否指向预期 commit，并确认当前 checkout 与发布 commit 一致、发布 commit 可从指定 base ref 到达。
+验证 source 仓库的发布 tag，输出可信 commit SHA。默认不依赖提前 checkout，而是直接 fetch `source-repository` 的 tag 和 base ref；这让它可以放在中心发布仓库里验证其他项目。
 
-这个 Action 适合放在真正执行发布的 workflow 中，例如：
+## 最小用法
 
-```text
-publish workflow on main/default branch
-  -> checkout release commit
-  -> verify tag + optional sha + checkout HEAD + base reachability
-  -> build and publish
-```
-
-它不负责创建 tag、checkout、构建、镜像发布或部署，只负责把发布对象校验成一个可信的 commit SHA。
-
-## 基本用法
+如果 workflow 是 tag push 触发，且 source 仓库就是当前仓库：
 
 ```yaml
-jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    outputs:
-      sha: ${{ steps.release-ref.outputs.sha }}
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout release commit
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ inputs.sha || inputs.tag }}
-          fetch-depth: 0
-
-      - name: Verify release tag ref
-        id: release-ref
-        uses: lwmacct/260707-action-verified-tag-ref@main
-        with:
-          tag: ${{ inputs.tag }}
-          sha: ${{ inputs.sha }}
-          base-ref: main
-          tag-pattern: "v*"
+- id: release-ref
+  uses: lwmacct/260707-action-verified-tag-ref@main
 ```
 
-后续 job 可以使用：
+Action 会自动推断：
+
+- `source-repository`: 当前仓库
+- `source-tag`: 当前 tag ref
+- `source-sha`: tag push 事件的 `GITHUB_SHA`
+- `source-base-ref`: source 仓库默认分支
+
+## workflow_dispatch 用法
+
+搭配 `action-workflow-dispatch` 时，目标 workflow 通常接收标准 inputs：
 
 ```yaml
-needs.prepare.outputs.sha
+on:
+  workflow_dispatch:
+    inputs:
+      source-repository:
+        required: true
+        type: string
+      source-tag:
+        required: true
+        type: string
+      source-sha:
+        required: false
+        type: string
+      source-base-ref:
+        required: false
+        type: string
 ```
 
-## 校验内容
+验证并 checkout source commit：
 
-默认会执行：
+```yaml
+- id: release-ref
+  uses: lwmacct/260707-action-verified-tag-ref@main
+  with:
+    source-repository: ${{ inputs.source-repository }}
+    source-tag: ${{ inputs.source-tag }}
+    source-sha: ${{ inputs.source-sha }}
+    source-base-ref: ${{ inputs.source-base-ref }}
 
-- fetch 指定 tag
-- fetch `base-ref`
-- 解析 `refs/tags/<tag>^{commit}`，兼容 lightweight tag 和 annotated tag
-- 如果传入 `sha`，要求 tag commit 等于该 sha
-- 要求当前 checkout `HEAD` 等于最终 release sha
-- 要求 release sha 可从 `base-ref` 到达
+- uses: actions/checkout@v5
+  with:
+    repository: ${{ steps.release-ref.outputs.source-repository }}
+    ref: ${{ steps.release-ref.outputs.sha }}
+```
+
+## 本地 checkout 额外校验
+
+如果已经 checkout 了 source commit，可以加 `checkout-path`，要求该目录的 `HEAD` 必须等于验证出的 source SHA：
+
+```yaml
+- uses: actions/checkout@v5
+  with:
+    ref: ${{ inputs.source-sha || inputs.source-tag }}
+    fetch-depth: 0
+
+- id: release-ref
+  uses: lwmacct/260707-action-verified-tag-ref@main
+  with:
+    source-tag: ${{ inputs.source-tag }}
+    source-sha: ${{ inputs.source-sha }}
+    checkout-path: .
+```
+
+## 本地仓库模式
+
+测试或特殊场景可以传 `source-path`，直接使用本地 git 仓库里的 tag/ref：
+
+```yaml
+- id: release-ref
+  uses: lwmacct/260707-action-verified-tag-ref@main
+  with:
+    source-path: .
+    source-tag: v1.2.3
+    source-base-ref: HEAD
+    fetch: "false"
+```
 
 ## Inputs
 
 | 名称 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `tag` | 是 |  | 要验证的 release tag |
-| `sha` | 否 | tag 指向的 commit | 可选预期 commit SHA，必须是完整 40 位 hex |
-| `base-ref` | 否 | 仓库默认分支，取不到时为 `main` | 发布 commit 必须可到达的分支或 ref |
-| `remote` | 否 | `origin` | fetch tag 和 base ref 使用的 git remote |
-| `fetch` | 否 | `true` | 是否在验证前 fetch tag 和 base ref |
-| `validate-checkout` | 否 | `true` | 是否要求当前 checkout `HEAD` 等于 release sha |
-| `validate-reachable` | 否 | `true` | 是否要求 release sha 可从 `base-ref` 到达 |
-| `tag-pattern` | 否 |  | 可选 tag glob，例如 `v*` |
-| `summary` | 否 | `true` | 是否写入 GitHub Step Summary |
+| `source-repository` | 否 | 当前仓库 | source tag 所在仓库 |
+| `source-tag` | 否 | 当前 tag ref | 要验证的 release tag |
+| `source-sha` | 否 | tag push 的 `GITHUB_SHA` | 可选预期 source commit SHA |
+| `source-base-ref` | 否 | source 仓库默认分支 | source commit 必须可到达的 ref |
+| `source-path` | 否 |  | 本地 git 仓库路径；为空时使用远程验证模式 |
+| `checkout-path` | 否 |  | 可选 checkout 目录，验证其 `HEAD` 等于 source SHA |
+| `token` | 否 | `${{ github.token }}` | 读取 source repo metadata 和 fetch 私有仓库使用 |
+| `fetch` | 否 | `true` | `source-path` 模式下是否 fetch tag/base；远程模式始终 fetch |
+| `validate-reachable` | 否 | `true` | 是否要求 source SHA 可从 `source-base-ref` 到达 |
+| `require-tag` | 否 | `true` | 没有 source tag 时是否失败 |
+| `tag-pattern` | 否 |  | source tag glob，例如 `v*` |
+| `summary` | 否 | `true` | 是否写入 Step Summary |
 
 ## Outputs
 
 | 名称 | 说明 |
 | --- | --- |
-| `tag` | 已验证的 tag |
-| `sha` | 最终可信的 release commit SHA |
+| `source-repository` | source 仓库 |
+| `source-tag` | 已验证的 source tag |
+| `source-sha` | 最终可信 source commit SHA |
+| `sha` | `source-sha` 的别名 |
 | `tag-sha` | 从 tag 解析出的 commit SHA |
-| `head-sha` | 当前 checkout HEAD SHA |
-| `base-ref` | 用于 reachability 校验的本地 base ref |
-| `base-sha` | 从 base ref 解析出的 commit SHA |
-
-## 和 workflow-dispatch 配合
-
-入口 workflow 可以用 `action-workflow-dispatch` 把 tag 事件转发到主分支上的 `publish.yml`：
-
-```yaml
-- uses: lwmacct/260707-action-workflow-dispatch@main
-  with:
-    workflow: publish.yml
-    ref: main
-    tag-pattern: "v*"
-```
-
-发布 workflow 再用本 Action 校验实际发布对象：
-
-```yaml
-- uses: lwmacct/260707-action-verified-tag-ref@main
-  id: release-ref
-  with:
-    tag: ${{ inputs.tag }}
-    sha: ${{ inputs.sha }}
-    base-ref: main
-```
+| `base-ref` | reachability 校验使用的本地 base ref |
+| `base-sha` | base ref 对应 commit SHA |
+| `checkout-sha` | `checkout-path` 的 HEAD SHA |
+| `source-path` | 实际用于 git 验证的本地路径 |

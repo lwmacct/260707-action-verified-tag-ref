@@ -1,7 +1,7 @@
 {
   "name": "@lwmacct/260707-action-verified-tag-ref",
-  "version": "0.2.260707",
-  "description": "Validate a release tag, optional SHA, checkout HEAD, and base reachability in GitHub Actions",
+  "version": "0.3.260707",
+  "description": "Verify a source repository tag, optional SHA, base reachability, and optional checkout HEAD",
   "main": "dist/index.js",
   "exports": "./dist/index.js",
   "type": "module",
