@@ -264,9 +264,9 @@ async function assertGitRef(ref, label) {
 }
 async function git(directory, args, token = "") {
     try {
-        const finalArgs = token ? ["-c", `http.${githubServerUrl()}/.extraheader=AUTHORIZATION: bearer ${token}`, ...args] : args;
-        const { stdout, stderr } = await execFileAsync("git", finalArgs, {
+        const { stdout, stderr } = await execFileAsync("git", args, {
             cwd: directory,
+            env: gitEnv(token),
             maxBuffer: 1024 * 1024,
         });
         if (stdout.trim()) {
@@ -283,6 +283,20 @@ async function git(directory, args, token = "") {
         }
         throw error;
     }
+}
+function gitEnv(token) {
+    if (!token) {
+        return process.env;
+    }
+    return {
+        ...process.env,
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: `http.${githubServerUrl()}/.extraheader`,
+        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basicAuthToken(token)}`,
+    };
+}
+function basicAuthToken(token) {
+    return Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
 }
 async function gitStdout(directory, args) {
     try {

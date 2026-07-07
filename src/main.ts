@@ -312,9 +312,9 @@ async function assertGitRef(ref: string, label: string): Promise<void> {
 
 async function git(directory: string, args: string[], token = ""): Promise<void> {
   try {
-    const finalArgs = token ? ["-c", `http.${githubServerUrl()}/.extraheader=AUTHORIZATION: bearer ${token}`, ...args] : args;
-    const { stdout, stderr } = await execFileAsync("git", finalArgs, {
+    const { stdout, stderr } = await execFileAsync("git", args, {
       cwd: directory,
+      env: gitEnv(token),
       maxBuffer: 1024 * 1024,
     });
     if (stdout.trim()) {
@@ -330,6 +330,23 @@ async function git(directory: string, args: string[], token = ""): Promise<void>
     }
     throw error;
   }
+}
+
+function gitEnv(token: string): NodeJS.ProcessEnv {
+  if (!token) {
+    return process.env;
+  }
+
+  return {
+    ...process.env,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: `http.${githubServerUrl()}/.extraheader`,
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basicAuthToken(token)}`,
+  };
+}
+
+function basicAuthToken(token: string): string {
+  return Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
 }
 
 async function gitStdout(directory: string, args: string[]): Promise<string> {
