@@ -1,6 +1,6 @@
 {
   "name": "@lwmacct/260707-action-verified-tag-ref",
-  "version": "0.7.260707",
+  "version": "0.8.260707",
   "description": "Verify a source repository tag, optional SHA, base reachability, and optional checkout HEAD",
   "main": "dist/index.js",
   "exports": "./dist/index.js",
@@ -8,6 +8,7 @@
   "packageManager": "pnpm@11.10.0",
   "scripts": {
     "build": "rm -rf dist/* && rollup -c && printf '{\"type\":\"module\"}\\n' > dist/package.json",
+    "smoke-test": "node scripts/smoke-test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
