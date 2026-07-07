@@ -20,41 +20,39 @@ Action 会自动推断：
 
 ## workflow_dispatch 用法
 
-搭配 `action-workflow-dispatch` 时，目标 workflow 通常接收标准 inputs：
+搭配 `action-workflow-dispatch` 的默认 `forward: minimal` 时，目标 workflow 只需要接收：
 
 ```yaml
 on:
   workflow_dispatch:
     inputs:
-      source-repository:
-        required: true
-        type: string
       source-tag:
         required: true
         type: string
       source-sha:
         required: false
         type: string
-      source-base-ref:
-        required: false
-        type: string
 ```
 
-验证并 checkout source commit：
+验证并 checkout 当前仓库的 source commit：
 
 ```yaml
 - id: release-ref
   uses: lwmacct/260707-action-verified-tag-ref@main
   with:
-    source-repository: ${{ inputs.source-repository }}
     source-tag: ${{ inputs.source-tag }}
     source-sha: ${{ inputs.source-sha }}
-    source-base-ref: ${{ inputs.source-base-ref }}
 
 - uses: actions/checkout@v5
   with:
-    repository: ${{ steps.release-ref.outputs.source-repository }}
     ref: ${{ steps.release-ref.outputs.sha }}
+```
+
+跨仓库发布时，让 dispatch action 使用 `forward: standard`，目标 workflow 再接收并传入：
+
+```yaml
+source-repository: ${{ inputs.source-repository }}
+source-base-ref: ${{ inputs.source-base-ref }}
 ```
 
 ## 本地 checkout 额外校验

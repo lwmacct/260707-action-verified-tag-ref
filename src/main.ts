@@ -1,6 +1,8 @@
 import * as core from "@actions/core";
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import * as http from "node:http";
+import * as https from "node:https";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -247,21 +249,56 @@ async function githubJson<T>(token: string, pathname: string): Promise<T> {
     throw new Error("token is required to resolve source repository metadata");
   }
 
-  const response = await fetch(`${githubApiBaseUrl()}${pathname}`, {
+  const response = await requestText(`${githubApiBaseUrl()}${pathname}`, {
     method: "GET",
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
+      connection: "close",
       "x-github-api-version": "2022-11-28",
     },
   });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`GitHub API request failed: ${response.status} ${response.statusText}${body ? `\n${body}` : ""}`);
+  if (response.statusCode < 200 || response.statusCode > 299) {
+    throw new Error(`GitHub API request failed: ${response.statusCode} ${response.statusMessage}${response.body ? `\n${response.body}` : ""}`);
   }
 
-  return (await response.json()) as T;
+  return JSON.parse(response.body) as T;
+}
+
+function requestText(
+  url: string,
+  options: { method: string; headers: Record<string, string> },
+): Promise<{ statusCode: number; statusMessage: string; body: string }> {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const client = parsedUrl.protocol === "http:" ? http : https;
+    const request = client.request(
+      parsedUrl,
+      {
+        method: options.method,
+        headers: options.headers,
+        agent: false,
+      },
+      (response) => {
+        response.setEncoding("utf8");
+        let responseBody = "";
+        response.on("data", (chunk) => {
+          responseBody += chunk;
+        });
+        response.on("end", () => {
+          response.socket.destroy();
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            statusMessage: response.statusMessage ?? "",
+            body: responseBody,
+          });
+        });
+      },
+    );
+    request.on("error", reject);
+    request.end();
+  });
 }
 
 async function assertGitRef(ref: string, label: string): Promise<void> {
