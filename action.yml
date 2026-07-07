@@ -1,0 +1,55 @@
+name: "Verify Tag Ref"
+description: "Validate a release tag, optional SHA, checkout HEAD, and base reachability"
+author: "lwmacct"
+inputs:
+  tag:
+    description: "Release tag to validate."
+    required: true
+  sha:
+    description: "Optional expected commit SHA. When empty, the tag target commit is used."
+    required: false
+  base-ref:
+    description: "Branch or ref that the release commit must be reachable from. Defaults to the repository default branch, then main."
+    required: false
+  remote:
+    description: "Git remote used when fetching tag and base ref."
+    default: "origin"
+    required: false
+  fetch:
+    description: "Set to true to fetch the tag and base ref before validation."
+    default: "true"
+    required: false
+  validate-checkout:
+    description: "Set to true to require the current checkout HEAD to equal the release commit."
+    default: "true"
+    required: false
+  validate-reachable:
+    description: "Set to true to require the release commit to be reachable from base-ref."
+    default: "true"
+    required: false
+  tag-pattern:
+    description: "Optional glob pattern that tag must match, for example v*."
+    required: false
+  summary:
+    description: "Set to true to write a GitHub step summary."
+    default: "true"
+    required: false
+outputs:
+  tag:
+    description: "Validated tag."
+  sha:
+    description: "Resolved trusted release commit SHA."
+  tag-sha:
+    description: "Commit SHA resolved from the tag."
+  head-sha:
+    description: "Current checkout HEAD SHA."
+  base-ref:
+    description: "Resolved local base ref used for reachability validation."
+  base-sha:
+    description: "Commit SHA resolved from base-ref."
+branding:
+  icon: "check-circle"
+  color: "green"
+runs:
+  using: "node24"
+  main: "dist/index.js"

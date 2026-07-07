@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ci.yml"
+      - "action.yml"
+      - "dist/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "rollup.config.mjs"
+      - "src/**"
+      - "tsconfig.json"
+  pull_request:
+    paths:
+      - ".github/workflows/ci.yml"
+      - "action.yml"
+      - "dist/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "rollup.config.mjs"
+      - "src/**"
+      - "tsconfig.json"
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Typecheck and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Verify dist is committed
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- dist
