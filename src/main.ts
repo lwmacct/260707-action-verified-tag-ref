@@ -255,6 +255,7 @@ async function githubJson<T>(token: string, pathname: string): Promise<T> {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
       connection: "close",
+      "user-agent": "lwmacct/260707-action-verified-tag-ref",
       "x-github-api-version": "2022-11-28",
     },
   });

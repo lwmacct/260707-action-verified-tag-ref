@@ -1,6 +1,6 @@
 {
   "name": "@lwmacct/260707-action-verified-tag-ref",
-  "version": "0.4.260707",
+  "version": "0.5.260707",
   "description": "Verify a source repository tag, optional SHA, base reachability, and optional checkout HEAD",
   "main": "dist/index.js",
   "exports": "./dist/index.js",
